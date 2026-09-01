@@ -148,7 +148,7 @@ function AICardView({ card }: { card: AICard }) {
             <Tag cat={task.category} />
           </div>
         ))}
-      <CardActions card={card} onOpen={card.type === "weekly" ? () => openWeeklyFrom(card.planId) : undefined} />
+      <CardActions card={card} />
     </div>
   );
 }
