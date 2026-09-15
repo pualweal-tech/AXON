@@ -4,7 +4,7 @@ import { useStore } from "../store";
 import type { Overlay } from "../types";
 
 export function ProfileScreen() {
-  const { data, setOverlay, logout } = useStore();
+  const { data, user, setOverlay, logout } = useStore();
   const lang = data.lang;
   const rows: { label: string; overlay: Overlay }[] = [
     { label: t(lang, "appearance"), overlay: { name: "appearance" } },
@@ -25,8 +25,8 @@ export function ProfileScreen() {
           <div className="row">
             <AxonMark size={48} />
             <div>
-              <b>{t(lang, "axon")}</b>
-              <div className="page-sub">{t(lang, "signedIn")}</div>
+              <b>{user?.name || t(lang, "axon")}</b>
+              <div className="page-sub">{user?.email || t(lang, "signedIn")}</div>
             </div>
           </div>
         </button>

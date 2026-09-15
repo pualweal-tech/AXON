@@ -30,6 +30,8 @@ export type Overlay =
   | { name: "about" }
   | { name: "account" };
 
+export type AIProvider = "openai" | "grok" | "deepseek";
+
 export interface Task {
   id: string;
   title: string;
@@ -106,6 +108,7 @@ export interface Prefs {
   structuredCards: boolean;
   memoryEnabled: boolean;
   voiceReplies: boolean;
+  aiProvider: AIProvider;
 }
 
 export interface AppData {

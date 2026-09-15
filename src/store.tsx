@@ -1,9 +1,10 @@
-import { createContext, useContext, useEffect, useMemo, useReducer, type ReactNode } from "react";
-import { attachPlan, buildWeeklyPlan, multimodalReply, replyFor } from "./ai";
-import { defaultData } from "./data";
+import { createContext, useContext, useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from "react";
+import { api, ApiError, type KeyFlags, type User } from "./api";
+import { emptyData, mergeData } from "./data";
 import { uid } from "./dates";
-import { loadData, saveData } from "./storage";
+import { t } from "./i18n";
 import type {
+  AIProvider,
   AppData,
   CardType,
   Category,
@@ -32,8 +33,11 @@ interface UIState {
 interface Store {
   data: AppData;
   ui: UIState;
+  user: User | null;
+  keys: KeyFlags;
   resolvedTheme: "light" | "dark";
-  login: () => void;
+  register: (email: string, password: string, name: string) => Promise<void>;
+  login: (email: string, password: string) => Promise<void>;
   logout: () => void;
   setTab: (tab: Tab) => void;
   setOverlay: (overlay: Overlay) => void;
@@ -62,9 +66,10 @@ interface Store {
   updateMemory: (id: string, text: string, kind?: string) => void;
   toggleMemory: (id: string) => void;
   deleteMemory: (id: string) => void;
-  setPref: (key: keyof AppData["prefs"], value: boolean) => void;
+  setPref: (key: Exclude<keyof AppData["prefs"], "aiProvider">, value: boolean) => void;
+  setProvider: (provider: AIProvider) => void;
+  saveApiKey: (provider: AIProvider, key: string | null) => Promise<void>;
   toast: (text: string) => void;
-  skipSplash: () => void;
 }
 
 const Ctx = createContext<Store | null>(null);
@@ -82,8 +87,26 @@ function resolveTheme(mode: ThemeMode): "light" | "dark" {
   return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
 }
 
+function errorText(err: unknown, lang: Lang): string {
+  const code = err instanceof ApiError ? err.code : "";
+  if (code === "exists") return t(lang, "emailTaken");
+  if (code === "invalid") return t(lang, "loginFailed");
+  if (code === "password") return t(lang, "passwordMin");
+  if (code === "email") return t(lang, "emailInvalid");
+  if (code === "missing_key") return t(lang, "missingApiKey");
+  if (code === "llm") return t(lang, "llmError");
+  if (code === "auth") return t(lang, "loginFailed");
+  return t(lang, "requestFailed");
+}
+
 export function StoreProvider({ children }: { children: ReactNode }) {
-  const [data, dispatch] = useReducer(dataReducer, defaultData(), loadData);
+  const [data, dispatch] = useReducer(dataReducer, emptyData());
+  const [user, setUser] = useState<User | null>(null);
+  const [keys, setKeys] = useState<KeyFlags>({
+    openai: false,
+    grok: false,
+    deepseek: false,
+  });
   const [ui, setUi] = useReducer(
     (s: UIState, p: Partial<UIState>) => ({ ...s, ...p }),
     {
@@ -98,10 +121,48 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     } satisfies UIState,
   );
 
+  const hydratedRef = useRef(false);
+  const dataRef = useRef(data);
+  dataRef.current = data;
+
   const resolvedTheme = useMemo(() => resolveTheme(data.theme), [data.theme]);
 
   useEffect(() => {
-    saveData(data);
+    let stop = false;
+    const started = Date.now();
+    void (async () => {
+      let sessionUser: User | null = null;
+      try {
+        const session = await api.me();
+        if (stop) return;
+        sessionUser = session.user;
+        setUser(session.user);
+        dispatch({ type: "replace", data: mergeData(session.data) });
+        try {
+          setKeys(await api.keys());
+        } catch {
+          /* keys optional */
+        }
+        hydratedRef.current = true;
+      } catch {
+        if (stop) return;
+      }
+      const wait = Math.max(400, 2200 - (Date.now() - started));
+      await new Promise((r) => setTimeout(r, wait));
+      if (stop) return;
+      setUi({ screen: { id: sessionUser ? "main" : "auth" } });
+    })();
+    return () => {
+      stop = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!hydratedRef.current || !data.authenticated) return;
+    const timer = window.setTimeout(() => {
+      void api.saveData(dataRef.current).catch(() => undefined);
+    }, 500);
+    return () => window.clearTimeout(timer);
   }, [data]);
 
   useEffect(() => {
@@ -124,20 +185,35 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     window.setTimeout(() => setUi({ toast: null }), 1800);
   };
 
+  const applySession = (nextUser: User, payload: Partial<AppData> | null) => {
+    setUser(nextUser);
+    dispatch({ type: "replace", data: mergeData(payload) });
+    hydratedRef.current = true;
+    setUi({ screen: { id: "main" }, overlay: { name: "none" }, tab: "chat" });
+    void api.keys().then(setKeys).catch(() => undefined);
+  };
+
   const value: Store = {
     data,
     ui,
+    user,
+    keys,
     resolvedTheme,
-    login: () => {
-      dispatch({ type: "patch", patch: { authenticated: true } });
-      setUi({ screen: { id: "main" } });
+    register: async (email, password, name) => {
+      const res = await api.register(email, password, name);
+      applySession(res.user, res.data);
+    },
+    login: async (email, password) => {
+      const res = await api.login(email, password);
+      applySession(res.user, res.data);
     },
     logout: () => {
-      dispatch({ type: "patch", patch: { authenticated: false } });
+      hydratedRef.current = false;
+      void api.logout().catch(() => undefined);
+      setUser(null);
+      dispatch({ type: "replace", data: emptyData() });
+      setKeys({ openai: false, grok: false, deepseek: false });
       setUi({ screen: { id: "auth" }, tab: "chat", overlay: { name: "none" } });
-    },
-    skipSplash: () => {
-      setUi({ screen: { id: data.authenticated ? "main" : "auth" } });
     },
     setTab: (tab) => setUi({ tab, overlay: { name: "none" } }),
     setOverlay: (overlay) => setUi({ overlay }),
@@ -150,44 +226,71 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     sendMessage: async (text) => {
       const content = (text ?? ui.composer).trim();
       if (!content) return;
-      const user = {
+      const snapshot = dataRef.current;
+      const userMsg = {
         id: uid("m"),
         role: "user" as const,
         text: content,
         createdAt: Date.now(),
       };
-      dispatch({ type: "patch", patch: { messages: [...data.messages, user] } });
+      const history = [...snapshot.messages, userMsg];
+      dispatch({ type: "patch", patch: { messages: history } });
       setUi({ composer: "", typing: true, multimodalOpen: false, tab: "chat" });
-      await new Promise((r) => setTimeout(r, 1200 + Math.random() * 600));
-      const draft = replyFor(content, data.lang, data.selectedDate, 0);
-      let plans = data.plans;
-      let message = draft;
-      if (draft.card?.type === "weekly") {
-        const plan = buildWeeklyPlan(data.selectedDate, 0);
-        plans = [...data.plans, plan];
-        message = attachPlan(draft, plan);
+      try {
+        const result = await api.chat({
+          text: content,
+          provider: snapshot.prefs.aiProvider,
+          lang: snapshot.lang,
+          date: snapshot.selectedDate,
+          memories: snapshot.prefs.memoryEnabled ? snapshot.memories : [],
+          structuredCards: snapshot.prefs.structuredCards,
+          history: snapshot.messages.map((m) => ({ role: m.role, text: m.text })),
+        });
+        const plans = result.plan ? [...dataRef.current.plans, result.plan] : dataRef.current.plans;
+        dispatch({
+          type: "patch",
+          patch: { messages: [...history, result.message], plans },
+        });
+      } catch (err) {
+        toast(errorText(err, snapshot.lang));
       }
-      dispatch({
-        type: "patch",
-        patch: { messages: [...data.messages, user, message], plans },
-      });
       setUi({ typing: false });
     },
     runMultimodal: async (mode, extra) => {
+      const snapshot = dataRef.current;
       setUi({ generating: true, overlay: { name: "multimodal", mode }, tab: "chat" });
-      await new Promise((r) => setTimeout(r, 1400));
-      const msg = multimodalReply(mode, data.lang, extra);
-      let plans = data.plans;
-      let message = msg;
-      if (msg.card?.type === "weekly") {
-        const plan = buildWeeklyPlan(data.selectedDate, 0);
-        plans = [...data.plans, plan];
-        message = attachPlan(msg, plan);
+      const prompt =
+        mode === "voice"
+          ? snapshot.lang === "zh"
+            ? "帮我规划这一周"
+            : "Plan my week"
+          : mode === "link"
+            ? `${snapshot.lang === "zh" ? "总结这个页面：" : "Summarize this page: "} ${extra || ""}`
+            : mode === "image"
+              ? snapshot.lang === "zh"
+                ? "分析这张图片的设计与信息，给出可执行建议。"
+                : "Analyze this image and give actionable design notes."
+              : snapshot.lang === "zh"
+                ? "阅读这份文档，提取可执行要点。"
+                : "Read this document and extract actionable points.";
+      try {
+        const result = await api.chat({
+          text: prompt,
+          provider: snapshot.prefs.aiProvider,
+          lang: snapshot.lang,
+          date: snapshot.selectedDate,
+          memories: snapshot.prefs.memoryEnabled ? snapshot.memories : [],
+          structuredCards: snapshot.prefs.structuredCards,
+          history: snapshot.messages.map((m) => ({ role: m.role, text: m.text })),
+        });
+        const plans = result.plan ? [...dataRef.current.plans, result.plan] : dataRef.current.plans;
+        dispatch({
+          type: "patch",
+          patch: { messages: [...dataRef.current.messages, result.message], plans },
+        });
+      } catch (err) {
+        toast(errorText(err, snapshot.lang));
       }
-      dispatch({
-        type: "patch",
-        patch: { messages: [...data.messages, message], plans },
-      });
       setUi({ generating: false, overlay: { name: "none" }, multimodalOpen: false });
     },
     saveCard: (kind, title, preview, payload) => {
@@ -207,7 +310,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           ],
         },
       });
-      toast(data.lang === "zh" ? "已保存到工作区" : "Saved to Workspace");
+      toast(t(data.lang, "savedWorkspace"));
     },
     convertTasks: (titles) => {
       dispatch({
@@ -227,7 +330,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           ],
         },
       });
-      toast(data.lang === "zh" ? "任务已加入工作区" : "Tasks added to Workspace");
+      toast(t(data.lang, "tasksCreated"));
     },
     openWeeklyFrom: (planId) => {
       if (planId) {
@@ -235,24 +338,43 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         return;
       }
       setUi({ generating: true });
-      window.setTimeout(() => {
-        const plan = buildWeeklyPlan(data.selectedDate, 0);
-        dispatch({ type: "patch", patch: { plans: [...data.plans, plan] } });
-        setUi({ generating: false, overlay: { name: "weekly-plan", planId: plan.id } });
-      }, 900);
+      void (async () => {
+        const snapshot = dataRef.current;
+        try {
+          const { plan } = await api.plan({
+            provider: snapshot.prefs.aiProvider,
+            lang: snapshot.lang,
+            date: snapshot.selectedDate,
+            memories: snapshot.prefs.memoryEnabled ? snapshot.memories : [],
+          });
+          dispatch({ type: "patch", patch: { plans: [...snapshot.plans, plan] } });
+          setUi({ generating: false, overlay: { name: "weekly-plan", planId: plan.id } });
+        } catch (err) {
+          setUi({ generating: false });
+          toast(errorText(err, snapshot.lang));
+        }
+      })();
     },
     regeneratePlan: async (planId) => {
       setUi({ generating: true });
-      await new Promise((r) => setTimeout(r, 1100));
-      const current = data.plans.find((p) => p.id === planId);
-      const next = buildWeeklyPlan(data.selectedDate, (current?.variant ?? 0) + 1);
-      next.id = planId;
-      dispatch({
-        type: "patch",
-        patch: { plans: data.plans.map((p) => (p.id === planId ? next : p)) },
-      });
+      const snapshot = dataRef.current;
+      try {
+        const { plan } = await api.plan({
+          provider: snapshot.prefs.aiProvider,
+          lang: snapshot.lang,
+          date: snapshot.selectedDate,
+          memories: snapshot.prefs.memoryEnabled ? snapshot.memories : [],
+        });
+        plan.id = planId;
+        dispatch({
+          type: "patch",
+          patch: { plans: snapshot.plans.map((p) => (p.id === planId ? plan : p)) },
+        });
+        toast(t(snapshot.lang, "planUpdated"));
+      } catch (err) {
+        toast(errorText(err, snapshot.lang));
+      }
       setUi({ generating: false });
-      toast(data.lang === "zh" ? "计划已更新" : "Plan updated");
     },
     editPlanItem: (planId, itemId, title) => {
       dispatch({
@@ -269,7 +391,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     addNote: (title, body, source = "manual") => {
       const note = {
         id: uid("n"),
-        title: title || (data.lang === "zh" ? "未命名笔记" : "Untitled note"),
+        title: title || t(data.lang, "untitledNote"),
         body,
         source,
         createdAt: Date.now(),
@@ -290,7 +412,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     },
     deleteNote: (id) => {
       dispatch({ type: "patch", patch: { notes: data.notes.filter((n) => n.id !== id) } });
-      toast(data.lang === "zh" ? "已删除" : "Deleted");
+      toast(t(data.lang, "deleted"));
     },
     addTask: (title, category = "work", source = "manual", date) => {
       dispatch({
@@ -314,11 +436,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     toggleTask: (id) => {
       dispatch({
         type: "patch",
-        patch: { tasks: data.tasks.map((t) => (t.id === id ? { ...t, done: !t.done } : t)) },
+        patch: { tasks: data.tasks.map((item) => (item.id === id ? { ...item, done: !item.done } : item)) },
       });
     },
     deleteTask: (id) => {
-      dispatch({ type: "patch", patch: { tasks: data.tasks.filter((t) => t.id !== id) } });
+      dispatch({ type: "patch", patch: { tasks: data.tasks.filter((item) => item.id !== id) } });
     },
     addMemory: (category, kind, text) => {
       dispatch({
@@ -361,6 +483,14 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     },
     setPref: (key, value) => {
       dispatch({ type: "patch", patch: { prefs: { ...data.prefs, [key]: value } } });
+    },
+    setProvider: (aiProvider) => {
+      dispatch({ type: "patch", patch: { prefs: { ...data.prefs, aiProvider } } });
+    },
+    saveApiKey: async (provider, key) => {
+      const next = await api.saveKeys({ [provider]: key });
+      setKeys(next);
+      toast(t(data.lang, "keySaved"));
     },
   };
 

@@ -3,7 +3,7 @@ import { t, languages } from "../i18n";
 import { IconTrash } from "../icons";
 import { useStore } from "../store";
 import { Sheet, Switch } from "../ui";
-import type { ThemeMode } from "../types";
+import type { AIProvider, ThemeMode } from "../types";
 
 export function Overlays() {
   const store = useStore();
@@ -167,23 +167,7 @@ export function Overlays() {
   }
 
   if (overlay.name === "ai-prefs") {
-    return (
-      <Sheet onClose={() => setOverlay({ name: "none" })}>
-        <h2>{t(lang, "aiPrefs")}</h2>
-        <div className="setting-row">
-          <span>{t(lang, "structuredCards")}</span>
-          <Switch on={data.prefs.structuredCards} onClick={() => setPref("structuredCards", !data.prefs.structuredCards)} />
-        </div>
-        <div className="setting-row">
-          <span>{t(lang, "voiceReplies")}</span>
-          <Switch on={data.prefs.voiceReplies} onClick={() => setPref("voiceReplies", !data.prefs.voiceReplies)} />
-        </div>
-        <div className="setting-row">
-          <span>{t(lang, "memoryAccess")}</span>
-          <Switch on={data.prefs.memoryEnabled} onClick={() => setPref("memoryEnabled", !data.prefs.memoryEnabled)} />
-        </div>
-      </Sheet>
-    );
+    return <AiPrefsSheet />;
   }
 
   if (overlay.name === "about") {
@@ -200,13 +184,101 @@ export function Overlays() {
     return (
       <Sheet onClose={() => setOverlay({ name: "none" })}>
         <h2>{t(lang, "account")}</h2>
-        <p className="page-sub" style={{ marginTop: 12 }}>{t(lang, "guestAccount")}</p>
-        <p className="page-sub">{t(lang, "signedIn")}</p>
+        <p className="page-sub" style={{ marginTop: 12 }}>{store.user?.name || t(lang, "axon")}</p>
+        <p className="page-sub">{store.user?.email}</p>
       </Sheet>
     );
   }
 
   return null;
+}
+
+function AiPrefsSheet() {
+  const { data, keys, setOverlay, setPref, setProvider, saveApiKey } = useStore();
+  const lang = data.lang;
+  const provider = data.prefs.aiProvider;
+  const [secret, setSecret] = useState("");
+  const [busy, setBusy] = useState(false);
+  const providers: { id: AIProvider; label: ReturnType<typeof t> }[] = [
+    { id: "openai", label: t(lang, "chatgpt") },
+    { id: "grok", label: t(lang, "grok") },
+    { id: "deepseek", label: t(lang, "deepseek") },
+  ];
+  const hasKey = keys[provider];
+
+  return (
+    <Sheet onClose={() => setOverlay({ name: "none" })}>
+      <h2>{t(lang, "aiPrefs")}</h2>
+      <div className="setting-row" style={{ display: "block", paddingBottom: 8 }}>
+        <div style={{ marginBottom: 10 }}>{t(lang, "aiProvider")}</div>
+        <div className="row" style={{ flexWrap: "wrap", gap: 8 }}>
+          {providers.map((item) => (
+            <button
+              key={item.id}
+              className={"mode-chip" + (provider === item.id ? " on" : "")}
+              onClick={() => {
+                setProvider(item.id);
+                setSecret("");
+              }}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+      </div>
+      <p className="page-sub" style={{ marginTop: 8 }}>
+        {t(lang, "apiKeyHint")}
+        {hasKey ? ` · ${t(lang, "keySaved")}` : ""}
+      </p>
+      <input
+        className="field"
+        style={{ marginTop: 12 }}
+        type="password"
+        value={secret}
+        placeholder={t(lang, "apiKey")}
+        autoComplete="off"
+        onChange={(e) => setSecret(e.target.value)}
+      />
+      <button
+        className="btn btn-primary btn-block"
+        style={{ marginTop: 12 }}
+        disabled={busy || !secret.trim()}
+        onClick={() => {
+          setBusy(true);
+          void saveApiKey(provider, secret.trim()).finally(() => {
+            setSecret("");
+            setBusy(false);
+          });
+        }}
+      >
+        {t(lang, "saveKey")}
+      </button>
+      {hasKey && (
+        <button
+          className="btn btn-ghost btn-block"
+          disabled={busy}
+          onClick={() => {
+            setBusy(true);
+            void saveApiKey(provider, null).finally(() => setBusy(false));
+          }}
+        >
+          {t(lang, "removeKey")}
+        </button>
+      )}
+      <div className="setting-row">
+        <span>{t(lang, "structuredCards")}</span>
+        <Switch on={data.prefs.structuredCards} onClick={() => setPref("structuredCards", !data.prefs.structuredCards)} />
+      </div>
+      <div className="setting-row">
+        <span>{t(lang, "voiceReplies")}</span>
+        <Switch on={data.prefs.voiceReplies} onClick={() => setPref("voiceReplies", !data.prefs.voiceReplies)} />
+      </div>
+      <div className="setting-row">
+        <span>{t(lang, "memoryAccess")}</span>
+        <Switch on={data.prefs.memoryEnabled} onClick={() => setPref("memoryEnabled", !data.prefs.memoryEnabled)} />
+      </div>
+    </Sheet>
+  );
 }
 
 function NoteSheet({
