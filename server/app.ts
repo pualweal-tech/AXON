@@ -11,7 +11,17 @@ import {
   signToken,
   verifyPassword,
 } from "./crypto";
-import { initDb, query, run, type KeyRow, type UserRow } from "./db";
+import {
+  createUser,
+  findUserByEmail,
+  findUserById,
+  initDb,
+  readKeys,
+  readPayload,
+  writeKeys,
+  writePayload,
+  type KeyRow,
+} from "./db";
 import "./env";
 import { isProd } from "./env";
 import { completeChat, completePlan, resolveApiKey, type Provider } from "./llm";
@@ -21,7 +31,12 @@ type Vars = { Variables: { userId: string; email: string } };
 const app = new Hono<Vars>().basePath("/api");
 
 app.use("*", async (c, next) => {
-  await initDb();
+  try {
+    await initDb();
+  } catch (err) {
+    console.error(err);
+    return c.json({ error: "server", detail: "database" }, 500);
+  }
   await next();
 });
 
@@ -33,8 +48,17 @@ app.use(
   }),
 );
 
+function normalizeEmail(value: string): string {
+  return value
+    .normalize("NFKC")
+    .trim()
+    .toLowerCase()
+    .replace(/＠/g, "@")
+    .replace(/\s+/g, "");
+}
+
 function isEmail(value: string): boolean {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+  return /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(value);
 }
 
 function cookieOpts() {
@@ -61,35 +85,40 @@ const auth: Parameters<typeof app.use>[1] = async (c, next) => {
   await next();
 };
 
+app.onError((err, c) => {
+  console.error(err);
+  return c.json({ error: "server", detail: err instanceof Error ? err.message : "unknown" }, 500);
+});
+
 app.get("/health", (c) => c.json({ ok: true }));
 
 app.post("/auth/register", async (c) => {
   const body = await c.req.json().catch(() => ({}));
-  const email = String(body.email || "").trim().toLowerCase();
+  const email = normalizeEmail(String(body.email || ""));
   const password = String(body.password || "");
   const name = String(body.name || "").trim();
   if (!isEmail(email)) return c.json({ error: "email" }, 400);
   if (password.length < 8) return c.json({ error: "password" }, 400);
 
-  const existing = await query<UserRow>("SELECT id FROM users WHERE email = ?", [email]);
-  if (existing.length) return c.json({ error: "exists" }, 409);
+  if (await findUserByEmail(email)) return c.json({ error: "exists" }, 409);
 
   const id = crypto.randomUUID();
-  await run(
-    "INSERT INTO users (id, email, password_hash, name, created_at) VALUES (?, ?, ?, ?, ?)",
-    [id, email, await hashPassword(password), name, Date.now()],
-  );
+  await createUser({
+    id,
+    email,
+    password_hash: await hashPassword(password),
+    name,
+    created_at: Date.now(),
+  });
   await setSession(c, id, email);
-  const user = { id, email, name };
-  return c.json({ user, data: null });
+  return c.json({ user: { id, email, name }, data: null });
 });
 
 app.post("/auth/login", async (c) => {
   const body = await c.req.json().catch(() => ({}));
-  const email = String(body.email || "").trim().toLowerCase();
+  const email = normalizeEmail(String(body.email || ""));
   const password = String(body.password || "");
-  const rows = await query<UserRow>("SELECT * FROM users WHERE email = ?", [email]);
-  const user = rows[0];
+  const user = await findUserByEmail(email);
   if (!user || !(await verifyPassword(password, user.password_hash))) {
     return c.json({ error: "invalid" }, 401);
   }
@@ -108,8 +137,7 @@ app.post("/auth/logout", async (c) => {
 
 app.get("/auth/me", auth, async (c) => {
   const userId = c.get("userId");
-  const rows = await query<UserRow>("SELECT id, email, name FROM users WHERE id = ?", [userId]);
-  const user = rows[0];
+  const user = await findUserById(userId);
   if (!user) return c.json({ error: "auth" }, 401);
   const data = await loadPayload(user.id);
   return c.json({
@@ -125,17 +153,12 @@ app.get("/data", auth, async (c) => {
 app.put("/data", auth, async (c) => {
   const body = await c.req.json().catch(() => ({}));
   const payload = JSON.stringify(body.data ?? body);
-  await run(
-    `INSERT INTO user_data (user_id, payload, updated_at) VALUES (?, ?, ?)
-     ON CONFLICT(user_id) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at`,
-    [c.get("userId"), payload, Date.now()],
-  );
+  await writePayload(c.get("userId"), payload);
   return c.json({ ok: true });
 });
 
 app.get("/keys", auth, async (c) => {
-  const rows = await query<KeyRow>("SELECT * FROM user_keys WHERE user_id = ?", [c.get("userId")]);
-  const keys = rows[0];
+  const keys = await readKeys(c.get("userId"));
   return c.json({
     openai: Boolean(keys?.openai),
     grok: Boolean(keys?.xai),
@@ -146,8 +169,12 @@ app.get("/keys", auth, async (c) => {
 app.post("/keys", auth, async (c) => {
   const body = await c.req.json().catch(() => ({}));
   const userId = c.get("userId");
-  const rows = await query<KeyRow>("SELECT * FROM user_keys WHERE user_id = ?", [userId]);
-  const current = rows[0] || { user_id: userId, openai: null, xai: null, deepseek: null };
+  const current = (await readKeys(userId)) || {
+    user_id: userId,
+    openai: null,
+    xai: null,
+    deepseek: null,
+  };
 
   const next = {
     openai: patchKey(body.openai, current.openai),
@@ -155,11 +182,7 @@ app.post("/keys", auth, async (c) => {
     deepseek: patchKey(body.deepseek, current.deepseek),
   };
 
-  await run(
-    `INSERT INTO user_keys (user_id, openai, xai, deepseek) VALUES (?, ?, ?, ?)
-     ON CONFLICT(user_id) DO UPDATE SET openai = excluded.openai, xai = excluded.xai, deepseek = excluded.deepseek`,
-    [userId, next.openai, next.xai, next.deepseek],
-  );
+  await writeKeys(userId, next);
   return c.json({
     openai: Boolean(next.openai),
     grok: Boolean(next.xai),
@@ -230,18 +253,14 @@ function patchKey(incoming: unknown, current: string | null): string | null {
 }
 
 async function loadKeys(userId: string): Promise<KeyRow | undefined> {
-  const rows = await query<KeyRow>("SELECT * FROM user_keys WHERE user_id = ?", [userId]);
-  return rows[0];
+  return readKeys(userId);
 }
 
 async function loadPayload(userId: string): Promise<Partial<AppData> | null> {
-  const rows = await query<{ payload: string }>(
-    "SELECT payload FROM user_data WHERE user_id = ?",
-    [userId],
-  );
-  if (!rows[0]) return null;
+  const payload = await readPayload(userId);
+  if (!payload) return null;
   try {
-    return JSON.parse(rows[0].payload) as Partial<AppData>;
+    return JSON.parse(payload) as Partial<AppData>;
   } catch {
     return null;
   }

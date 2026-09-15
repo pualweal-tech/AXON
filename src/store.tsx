@@ -95,7 +95,8 @@ function errorText(err: unknown, lang: Lang): string {
   if (code === "email") return t(lang, "emailInvalid");
   if (code === "missing_key") return t(lang, "missingApiKey");
   if (code === "llm") return t(lang, "llmError");
-  if (code === "auth") return t(lang, "loginFailed");
+  if (code === "auth" || code === "invalid") return t(lang, "loginFailed");
+  if (code === "server") return t(lang, "serverError");
   return t(lang, "requestFailed");
 }
 

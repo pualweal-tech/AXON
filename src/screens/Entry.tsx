@@ -4,6 +4,19 @@ import { AxonMark } from "../icons";
 import { ApiError } from "../api";
 import { useStore } from "../store";
 
+function normalizeEmail(value: string): string {
+  return value
+    .normalize("NFKC")
+    .trim()
+    .toLowerCase()
+    .replace(/＠/g, "@")
+    .replace(/\s+/g, "");
+}
+
+function isEmail(value: string): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(value);
+}
+
 export function Splash() {
   const [leaving, setLeaving] = useState(false);
 
@@ -39,20 +52,30 @@ export function Auth() {
 
   const submit = async () => {
     setError("");
+    const cleaned = normalizeEmail(email);
+    if (!isEmail(cleaned)) {
+      setError(t(lang, "emailInvalid"));
+      return;
+    }
+    if (password.length < 8) {
+      setError(t(lang, "passwordMin"));
+      return;
+    }
     if (mode === "signup" && password !== confirm) {
       setError(t(lang, "passwordMismatch"));
       return;
     }
     setBusy(true);
     try {
-      if (mode === "signup") await register(email, password, name);
-      else await login(email, password);
+      if (mode === "signup") await register(cleaned, password, name);
+      else await login(cleaned, password);
     } catch (err) {
       const code = err instanceof ApiError ? err.code : "";
       if (code === "exists") setError(t(lang, "emailTaken"));
       else if (code === "password") setError(t(lang, "passwordMin"));
       else if (code === "email") setError(t(lang, "emailInvalid"));
       else if (code === "invalid") setError(t(lang, "loginFailed"));
+      else if (code === "server") setError(t(lang, "serverError"));
       else setError(t(lang, "requestFailed"));
     }
     setBusy(false);
@@ -65,6 +88,7 @@ export function Auth() {
       <p className="page-sub">{t(lang, "tagline")}</p>
       <form
         className="auth-form"
+        noValidate
         onSubmit={(e) => {
           e.preventDefault();
           void submit();
@@ -97,10 +121,14 @@ export function Auth() {
         )}
         <input
           className="field"
-          type="email"
+          type="text"
+          inputMode="email"
           value={email}
           placeholder={t(lang, "emailPlaceholder")}
           autoComplete="email"
+          autoCapitalize="none"
+          autoCorrect="off"
+          spellCheck={false}
           onChange={(e) => setEmail(e.target.value)}
         />
         <input

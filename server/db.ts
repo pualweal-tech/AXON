@@ -1,68 +1,5 @@
-import { mkdirSync } from "node:fs";
-import { resolve } from "node:path";
-import { createClient, type Client, type InValue } from "@libsql/client";
-
-let client: Client | null = null;
-let ready: Promise<void> | null = null;
-
-function dbPath(): { url: string; authToken?: string } {
-  if (process.env.TURSO_DATABASE_URL) {
-    return {
-      url: process.env.TURSO_DATABASE_URL,
-      authToken: process.env.TURSO_AUTH_TOKEN,
-    };
-  }
-  if (process.env.VERCEL) {
-    return { url: "file:/tmp/axon.db" };
-  }
-  mkdirSync(resolve(process.cwd(), "data"), { recursive: true });
-  return { url: "file:" + resolve(process.cwd(), "data", "axon.db") };
-}
-
-export function getDb(): Client {
-  if (!client) {
-    client = createClient(dbPath());
-  }
-  return client;
-}
-
-export async function initDb(): Promise<void> {
-  if (!ready) {
-    ready = (async () => {
-      const db = getDb();
-      await db.executeMultiple(`
-        CREATE TABLE IF NOT EXISTS users (
-          id TEXT PRIMARY KEY,
-          email TEXT NOT NULL UNIQUE,
-          password_hash TEXT NOT NULL,
-          name TEXT NOT NULL DEFAULT '',
-          created_at INTEGER NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS user_data (
-          user_id TEXT PRIMARY KEY,
-          payload TEXT NOT NULL,
-          updated_at INTEGER NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS user_keys (
-          user_id TEXT PRIMARY KEY,
-          openai TEXT,
-          xai TEXT,
-          deepseek TEXT
-        );
-      `);
-    })();
-  }
-  await ready;
-}
-
-export async function query<T>(sql: string, args: InValue[] = []): Promise<T[]> {
-  const rs = await getDb().execute({ sql, args });
-  return rs.rows as unknown as T[];
-}
-
-export async function run(sql: string, args: InValue[] = []): Promise<void> {
-  await getDb().execute({ sql, args });
-}
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 
 export type UserRow = {
   id: string;
@@ -72,15 +9,85 @@ export type UserRow = {
   created_at: number;
 };
 
-export type DataRow = {
-  user_id: string;
-  payload: string;
-  updated_at: number;
-};
-
 export type KeyRow = {
   user_id: string;
   openai: string | null;
   xai: string | null;
   deepseek: string | null;
 };
+
+type FileDB = {
+  users: UserRow[];
+  data: Record<string, { payload: string; updated_at: number }>;
+  keys: Record<string, Omit<KeyRow, "user_id">>;
+};
+
+function dbFile(): string {
+  if (process.env.VERCEL) return "/tmp/axon.json";
+  const file = resolve(process.cwd(), "data", "axon.json");
+  mkdirSync(dirname(file), { recursive: true });
+  return file;
+}
+
+function empty(): FileDB {
+  return { users: [], data: {}, keys: {} };
+}
+
+function load(): FileDB {
+  const file = dbFile();
+  if (!existsSync(file)) return empty();
+  try {
+    const parsed = JSON.parse(readFileSync(file, "utf8")) as Partial<FileDB>;
+    return {
+      users: Array.isArray(parsed.users) ? parsed.users : [],
+      data: parsed.data && typeof parsed.data === "object" ? parsed.data : {},
+      keys: parsed.keys && typeof parsed.keys === "object" ? parsed.keys : {},
+    };
+  } catch {
+    return empty();
+  }
+}
+
+function save(db: FileDB): void {
+  writeFileSync(dbFile(), JSON.stringify(db));
+}
+
+export async function initDb(): Promise<void> {
+  save(load());
+}
+
+export async function findUserByEmail(email: string): Promise<UserRow | undefined> {
+  return load().users.find((user) => user.email === email);
+}
+
+export async function findUserById(id: string): Promise<UserRow | undefined> {
+  return load().users.find((user) => user.id === id);
+}
+
+export async function createUser(user: UserRow): Promise<void> {
+  const db = load();
+  db.users.push(user);
+  save(db);
+}
+
+export async function readPayload(userId: string): Promise<string | null> {
+  return load().data[userId]?.payload ?? null;
+}
+
+export async function writePayload(userId: string, payload: string): Promise<void> {
+  const db = load();
+  db.data[userId] = { payload, updated_at: Date.now() };
+  save(db);
+}
+
+export async function readKeys(userId: string): Promise<KeyRow | undefined> {
+  const keys = load().keys[userId];
+  if (!keys) return undefined;
+  return { user_id: userId, ...keys };
+}
+
+export async function writeKeys(userId: string, keys: Omit<KeyRow, "user_id">): Promise<void> {
+  const db = load();
+  db.keys[userId] = keys;
+  save(db);
+}

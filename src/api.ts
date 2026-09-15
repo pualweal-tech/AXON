@@ -22,12 +22,15 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     credentials: "include",
     headers: { "Content-Type": "application/json", ...(init?.headers || {}) },
   });
-  const body = (await res.json().catch(() => ({}))) as {
-    error?: string;
-    detail?: string;
-  } & T;
+  const text = await res.text();
+  let body: { error?: string; detail?: string } & T;
+  try {
+    body = JSON.parse(text) as { error?: string; detail?: string } & T;
+  } catch {
+    throw new ApiError(res.status >= 500 ? "server" : "request_failed", res.status);
+  }
   if (!res.ok) {
-    throw new ApiError(body.error || "request_failed", res.status, body.detail);
+    throw new ApiError(body.error || (res.status >= 500 ? "server" : "request_failed"), res.status, body.detail);
   }
   return body;
 }
