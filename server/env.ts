@@ -1,11 +1,3 @@
-import { config } from "dotenv";
-
-try {
-  if (!process.env.VERCEL) config();
-} catch {
-  /* .env is optional */
-}
-
 export function jwtSecret(): Uint8Array {
   const secret = process.env.JWT_SECRET || "axon-dev-secret-change-me";
   return new TextEncoder().encode(secret);

@@ -1,6 +1,3 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
-
 export type UserRow = {
   id: string;
   email: string;
@@ -22,72 +19,71 @@ type FileDB = {
   keys: Record<string, Omit<KeyRow, "user_id">>;
 };
 
-function dbFile(): string {
-  if (process.env.VERCEL) return "/tmp/axon.json";
-  const file = resolve(process.cwd(), "data", "axon.json");
-  mkdirSync(dirname(file), { recursive: true });
-  return file;
-}
+const g = globalThis as typeof globalThis & { __axonDb?: FileDB; __axonSubs?: Array<(db: FileDB) => void> };
 
 function empty(): FileDB {
   return { users: [], data: {}, keys: {} };
 }
 
-function load(): FileDB {
-  const file = dbFile();
-  if (!existsSync(file)) return empty();
-  try {
-    const parsed = JSON.parse(readFileSync(file, "utf8")) as Partial<FileDB>;
-    return {
-      users: Array.isArray(parsed.users) ? parsed.users : [],
-      data: parsed.data && typeof parsed.data === "object" ? parsed.data : {},
-      keys: parsed.keys && typeof parsed.keys === "object" ? parsed.keys : {},
-    };
-  } catch {
-    return empty();
-  }
+function db(): FileDB {
+  if (!g.__axonDb) g.__axonDb = empty();
+  return g.__axonDb;
 }
 
-function save(db: FileDB): void {
-  writeFileSync(dbFile(), JSON.stringify(db));
+function emit(): void {
+  g.__axonSubs?.forEach((fn) => fn(db()));
+}
+
+export function hydrate(data: Partial<FileDB> | null | undefined): void {
+  g.__axonDb = {
+    users: Array.isArray(data?.users) ? data.users : [],
+    data: data?.data && typeof data.data === "object" ? data.data : {},
+    keys: data?.keys && typeof data.keys === "object" ? data.keys : {},
+  };
+}
+
+export function snapshot(): FileDB {
+  return db();
+}
+
+export function subscribe(fn: (data: FileDB) => void): void {
+  g.__axonSubs = g.__axonSubs || [];
+  g.__axonSubs.push(fn);
 }
 
 export async function initDb(): Promise<void> {
-  save(load());
+  db();
 }
 
 export async function findUserByEmail(email: string): Promise<UserRow | undefined> {
-  return load().users.find((user) => user.email === email);
+  return db().users.find((user) => user.email === email);
 }
 
 export async function findUserById(id: string): Promise<UserRow | undefined> {
-  return load().users.find((user) => user.id === id);
+  return db().users.find((user) => user.id === id);
 }
 
 export async function createUser(user: UserRow): Promise<void> {
-  const db = load();
-  db.users.push(user);
-  save(db);
+  db().users.push(user);
+  emit();
 }
 
 export async function readPayload(userId: string): Promise<string | null> {
-  return load().data[userId]?.payload ?? null;
+  return db().data[userId]?.payload ?? null;
 }
 
 export async function writePayload(userId: string, payload: string): Promise<void> {
-  const db = load();
-  db.data[userId] = { payload, updated_at: Date.now() };
-  save(db);
+  db().data[userId] = { payload, updated_at: Date.now() };
+  emit();
 }
 
 export async function readKeys(userId: string): Promise<KeyRow | undefined> {
-  const keys = load().keys[userId];
+  const keys = db().keys[userId];
   if (!keys) return undefined;
   return { user_id: userId, ...keys };
 }
 
 export async function writeKeys(userId: string, keys: Omit<KeyRow, "user_id">): Promise<void> {
-  const db = load();
-  db.keys[userId] = keys;
-  save(db);
+  db().keys[userId] = keys;
+  emit();
 }

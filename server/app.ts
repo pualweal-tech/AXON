@@ -28,19 +28,14 @@ import { completeChat, completePlan, resolveApiKey, type Provider } from "./llm"
 
 type Vars = { Variables: { userId: string; email: string } };
 
-const app = new Hono<Vars>().basePath("/api");
+const routes = new Hono<Vars>();
 
-app.use("*", async (c, next) => {
-  try {
-    await initDb();
-  } catch (err) {
-    console.error(err);
-    return c.json({ error: "server", detail: "database" }, 500);
-  }
+routes.use("*", async (_c, next) => {
+  await initDb();
   await next();
 });
 
-app.use(
+routes.use(
   "*",
   cors({
     origin: (origin) => origin || "*",
@@ -76,7 +71,7 @@ async function setSession(c: Context, userId: string, email: string) {
   setCookie(c, COOKIE, token, cookieOpts());
 }
 
-const auth: Parameters<typeof app.use>[1] = async (c, next) => {
+const auth: Parameters<typeof routes.use>[1] = async (c, next) => {
   const token = getCookie(c, COOKIE);
   const session = token ? await readToken(token) : null;
   if (!session) return c.json({ error: "auth" }, 401);
@@ -85,14 +80,21 @@ const auth: Parameters<typeof app.use>[1] = async (c, next) => {
   await next();
 };
 
-app.onError((err, c) => {
+routes.onError((err, c) => {
   console.error(err);
   return c.json({ error: "server", detail: err instanceof Error ? err.message : "unknown" }, 500);
 });
 
-app.get("/health", (c) => c.json({ ok: true }));
+routes.notFound((c) => c.json({ error: "not_found", path: c.req.path }, 404));
 
-app.post("/auth/register", async (c) => {
+routes.get("/health", (c) =>
+  c.json({
+    ok: true,
+    vercel: Boolean(process.env.VERCEL),
+  }),
+);
+
+routes.post("/auth/register", async (c) => {
   const body = await c.req.json().catch(() => ({}));
   const email = normalizeEmail(String(body.email || ""));
   const password = String(body.password || "");
@@ -114,7 +116,7 @@ app.post("/auth/register", async (c) => {
   return c.json({ user: { id, email, name }, data: null });
 });
 
-app.post("/auth/login", async (c) => {
+routes.post("/auth/login", async (c) => {
   const body = await c.req.json().catch(() => ({}));
   const email = normalizeEmail(String(body.email || ""));
   const password = String(body.password || "");
@@ -130,12 +132,12 @@ app.post("/auth/login", async (c) => {
   });
 });
 
-app.post("/auth/logout", async (c) => {
+routes.post("/auth/logout", async (c) => {
   deleteCookie(c, COOKIE, { path: "/" });
   return c.json({ ok: true });
 });
 
-app.get("/auth/me", auth, async (c) => {
+routes.get("/auth/me", auth, async (c) => {
   const userId = c.get("userId");
   const user = await findUserById(userId);
   if (!user) return c.json({ error: "auth" }, 401);
@@ -146,18 +148,18 @@ app.get("/auth/me", auth, async (c) => {
   });
 });
 
-app.get("/data", auth, async (c) => {
+routes.get("/data", auth, async (c) => {
   return c.json({ data: await loadPayload(c.get("userId")) });
 });
 
-app.put("/data", auth, async (c) => {
+routes.put("/data", auth, async (c) => {
   const body = await c.req.json().catch(() => ({}));
   const payload = JSON.stringify(body.data ?? body);
   await writePayload(c.get("userId"), payload);
   return c.json({ ok: true });
 });
 
-app.get("/keys", auth, async (c) => {
+routes.get("/keys", auth, async (c) => {
   const keys = await readKeys(c.get("userId"));
   return c.json({
     openai: Boolean(keys?.openai),
@@ -166,7 +168,7 @@ app.get("/keys", auth, async (c) => {
   });
 });
 
-app.post("/keys", auth, async (c) => {
+routes.post("/keys", auth, async (c) => {
   const body = await c.req.json().catch(() => ({}));
   const userId = c.get("userId");
   const current = (await readKeys(userId)) || {
@@ -177,9 +179,9 @@ app.post("/keys", auth, async (c) => {
   };
 
   const next = {
-    openai: patchKey(body.openai, current.openai),
-    xai: patchKey(body.grok ?? body.xai, current.xai),
-    deepseek: patchKey(body.deepseek, current.deepseek),
+    openai: await patchKey(body.openai, current.openai),
+    xai: await patchKey(body.grok ?? body.xai, current.xai),
+    deepseek: await patchKey(body.deepseek, current.deepseek),
   };
 
   await writeKeys(userId, next);
@@ -190,11 +192,11 @@ app.post("/keys", auth, async (c) => {
   });
 });
 
-app.post("/chat", auth, async (c) => {
+routes.post("/chat", auth, async (c) => {
   const body = await c.req.json().catch(() => ({}));
   const provider = normalizeProvider(body.provider);
   const keys = await loadKeys(c.get("userId"));
-  const apiKey = resolveApiKey(provider, keys);
+  const apiKey = await resolveApiKey(provider, keys);
   if (!apiKey) return c.json({ error: "missing_key", provider }, 400);
 
   const memories = Array.isArray(body.memories) ? (body.memories as MemoryItem[]) : [];
@@ -220,11 +222,11 @@ app.post("/chat", auth, async (c) => {
   }
 });
 
-app.post("/plan", auth, async (c) => {
+routes.post("/plan", auth, async (c) => {
   const body = await c.req.json().catch(() => ({}));
   const provider = normalizeProvider(body.provider);
   const keys = await loadKeys(c.get("userId"));
-  const apiKey = resolveApiKey(provider, keys);
+  const apiKey = await resolveApiKey(provider, keys);
   if (!apiKey) return c.json({ error: "missing_key", provider }, 400);
   try {
     const plan = await completePlan({
@@ -246,7 +248,7 @@ function normalizeProvider(value: unknown): Provider {
   return "openai";
 }
 
-function patchKey(incoming: unknown, current: string | null): string | null {
+async function patchKey(incoming: unknown, current: string | null): Promise<string | null> {
   if (incoming === undefined) return current;
   if (incoming === null || incoming === "") return null;
   return encryptSecret(String(incoming).trim());
@@ -265,5 +267,7 @@ async function loadPayload(userId: string): Promise<Partial<AppData> | null> {
     return null;
   }
 }
+
+const app = new Hono().route("/", routes).route("/api", routes);
 
 export default app;

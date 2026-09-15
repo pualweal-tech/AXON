@@ -1,5 +1,4 @@
 import type { AICard, Category, ChatMessage, Lang, MemoryItem, WeeklyPlan } from "../src/types";
-import { buildWeeklyPlan } from "../src/ai";
 import { decryptSecret } from "./crypto";
 import type { KeyRow } from "./db";
 
@@ -32,12 +31,12 @@ const PROVIDERS: Record<
   },
 };
 
-export function resolveApiKey(provider: Provider, keys: KeyRow | undefined): string | null {
+export async function resolveApiKey(provider: Provider, keys: KeyRow | undefined): Promise<string | null> {
   const spec = PROVIDERS[provider];
   const stored = keys?.[spec.keyField];
   if (stored) {
     try {
-      const plain = decryptSecret(stored);
+      const plain = await decryptSecret(stored);
       if (plain.trim()) return plain.trim();
     } catch {
       /* ignore bad stored key */
@@ -83,6 +82,22 @@ function parsePayload(raw: string): LLMPayload {
     }
     return { text: raw.trim() };
   }
+}
+
+function fallbackPlan(_date: string): WeeklyPlan {
+  const days = ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY"];
+  return {
+    id: nid("plan"),
+    variant: 0,
+    generatedAt: Date.now(),
+    items: days.map((day, i) => ({
+      id: nid("pi"),
+      title: i % 2 === 0 ? "Deep work" : "Recovery / review",
+      time: i % 2 === 0 ? "9am" : "6pm",
+      category: i % 2 === 0 ? "work" : "health",
+      day,
+    })),
+  };
 }
 
 function nid(prefix: string): string {
@@ -201,7 +216,7 @@ export async function completeChat(opts: {
           })),
         };
       } else {
-        plan = buildWeeklyPlan(opts.date, 0);
+        plan = fallbackPlan(opts.date);
       }
     }
     card = {
@@ -243,5 +258,5 @@ export async function completePlan(opts: {
         ? "请根据我的优先级生成一份周一到周五的周计划，带上时间和类别。"
         : "Generate a Monday–Friday weekly plan around my priorities, with times and categories.",
   });
-  return result.plan || buildWeeklyPlan(opts.date, Date.now() % 2);
+  return result.plan || fallbackPlan(opts.date);
 }
