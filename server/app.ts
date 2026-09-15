@@ -4,7 +4,9 @@ import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { cors } from "hono/cors";
 import type { AppData, MemoryItem } from "../src/types";
 import {
+  ACCOUNTS,
   COOKIE,
+  decryptSecret,
   encryptSecret,
   hashPassword,
   readToken,
@@ -16,8 +18,10 @@ import {
   findUserByEmail,
   findUserById,
   initDb,
+  mergeHydrate,
   readKeys,
   readPayload,
+  snapshot,
   writeKeys,
   writePayload,
   type KeyRow,
@@ -26,13 +30,15 @@ import "./env";
 import { isProd } from "./env";
 import { completeChat, completePlan, resolveApiKey, type Provider } from "./llm";
 
-type Vars = { Variables: { userId: string; email: string } };
+type Vars = { Variables: { userId: string; email: string; name: string } };
 
 const routes = new Hono<Vars>();
 
-routes.use("*", async (_c, next) => {
+routes.use("*", async (c, next) => {
   await initDb();
+  await loadAccounts(c);
   await next();
+  await persistAccounts(c);
 });
 
 routes.use(
@@ -66,9 +72,31 @@ function cookieOpts() {
   };
 }
 
-async function setSession(c: Context, userId: string, email: string) {
-  const token = await signToken(userId, email);
+async function setSession(c: Context, userId: string, email: string, name: string) {
+  const token = await signToken(userId, email, name);
   setCookie(c, COOKIE, token, cookieOpts());
+}
+
+async function loadAccounts(c: Context): Promise<void> {
+  const packed = getCookie(c, ACCOUNTS);
+  if (!packed) return;
+  try {
+    mergeHydrate(JSON.parse(await decryptSecret(packed)));
+  } catch {
+    /* ignore a stale or truncated cookie */
+  }
+}
+
+async function persistAccounts(c: Context): Promise<void> {
+  const snap = snapshot();
+  if (!snap.users.length) return;
+  try {
+    const packed = await encryptSecret(JSON.stringify({ users: snap.users, keys: snap.keys }));
+    if (packed.length > 3500) return;
+    setCookie(c, ACCOUNTS, packed, cookieOpts());
+  } catch {
+    /* ignore cookie write failures */
+  }
 }
 
 const auth: Parameters<typeof routes.use>[1] = async (c, next) => {
@@ -77,6 +105,7 @@ const auth: Parameters<typeof routes.use>[1] = async (c, next) => {
   if (!session) return c.json({ error: "auth" }, 401);
   c.set("userId", session.userId);
   c.set("email", session.email);
+  c.set("name", session.name);
   await next();
 };
 
@@ -112,7 +141,8 @@ routes.post("/auth/register", async (c) => {
     name,
     created_at: Date.now(),
   });
-  await setSession(c, id, email);
+  await setSession(c, id, email, name);
+  await persistAccounts(c);
   return c.json({ user: { id, email, name }, data: null });
 });
 
@@ -124,7 +154,8 @@ routes.post("/auth/login", async (c) => {
   if (!user || !(await verifyPassword(password, user.password_hash))) {
     return c.json({ error: "invalid" }, 401);
   }
-  await setSession(c, user.id, user.email);
+  await setSession(c, user.id, user.email, user.name);
+  await persistAccounts(c);
   const data = await loadPayload(user.id);
   return c.json({
     user: { id: user.id, email: user.email, name: user.name },
@@ -140,10 +171,13 @@ routes.post("/auth/logout", async (c) => {
 routes.get("/auth/me", auth, async (c) => {
   const userId = c.get("userId");
   const user = await findUserById(userId);
-  if (!user) return c.json({ error: "auth" }, 401);
-  const data = await loadPayload(user.id);
+  const data = user ? await loadPayload(user.id) : null;
   return c.json({
-    user: { id: user.id, email: user.email, name: user.name },
+    user: {
+      id: user?.id || userId,
+      email: user?.email || c.get("email"),
+      name: user?.name || c.get("name") || "",
+    },
     data,
   });
 });

@@ -42,6 +42,22 @@ export function hydrate(data: Partial<FileDB> | null | undefined): void {
   };
 }
 
+export function mergeHydrate(data: Partial<FileDB> | null | undefined): void {
+  if (!data) return;
+  const current = db();
+  for (const user of Array.isArray(data.users) ? data.users : []) {
+    const index = current.users.findIndex((row) => row.id === user.id || row.email === user.email);
+    if (index >= 0) current.users[index] = user;
+    else current.users.push(user);
+  }
+  if (data.keys && typeof data.keys === "object") {
+    current.keys = { ...current.keys, ...data.keys };
+  }
+  if (data.data && typeof data.data === "object") {
+    current.data = { ...current.data, ...data.data };
+  }
+}
+
 export function snapshot(): FileDB {
   return db();
 }

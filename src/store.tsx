@@ -74,6 +74,29 @@ interface Store {
 
 const Ctx = createContext<Store | null>(null);
 
+function cacheKey(userId: string): string {
+  return `axon:data:${userId}`;
+}
+
+function readCachedData(userId: string): Partial<AppData> | null {
+  try {
+    const raw = localStorage.getItem(cacheKey(userId));
+    return raw ? (JSON.parse(raw) as Partial<AppData>) : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeCachedData(userId: string, data: AppData): void {
+  try {
+    const { authenticated, ...payload } = data;
+    void authenticated;
+    localStorage.setItem(cacheKey(userId), JSON.stringify(payload));
+  } catch {
+    /* quota */
+  }
+}
+
 type DataAction = { type: "replace"; data: AppData } | { type: "patch"; patch: Partial<AppData> };
 
 function dataReducer(state: AppData, action: DataAction): AppData {
@@ -124,7 +147,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   const hydratedRef = useRef(false);
   const dataRef = useRef(data);
+  const userRef = useRef(user);
   dataRef.current = data;
+  userRef.current = user;
 
   const resolvedTheme = useMemo(() => resolveTheme(data.theme), [data.theme]);
 
@@ -138,7 +163,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         if (stop) return;
         sessionUser = session.user;
         setUser(session.user);
-        dispatch({ type: "replace", data: mergeData(session.data) });
+        const incoming = session.data ?? readCachedData(session.user.id);
+        dispatch({ type: "replace", data: mergeData(incoming) });
+        writeCachedData(session.user.id, mergeData(incoming));
         try {
           setKeys(await api.keys());
         } catch {
@@ -160,6 +187,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (!hydratedRef.current || !data.authenticated) return;
+    const userId = userRef.current?.id;
+    if (userId) writeCachedData(userId, dataRef.current);
     const timer = window.setTimeout(() => {
       void api.saveData(dataRef.current).catch(() => undefined);
     }, 500);
@@ -187,8 +216,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   };
 
   const applySession = (nextUser: User, payload: Partial<AppData> | null) => {
+    const incoming = payload ?? readCachedData(nextUser.id);
     setUser(nextUser);
-    dispatch({ type: "replace", data: mergeData(payload) });
+    const next = mergeData(incoming);
+    dispatch({ type: "replace", data: next });
+    writeCachedData(nextUser.id, next);
     hydratedRef.current = true;
     setUi({ screen: { id: "main" }, overlay: { name: "none" }, tab: "chat" });
     void api.keys().then(setKeys).catch(() => undefined);
