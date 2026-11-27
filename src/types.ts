@@ -5,13 +5,7 @@ export type Category = "work" | "health" | "study" | "personal";
 export type Source = "ai" | "manual";
 export type MemoryCategory = "work" | "schedule" | "preferences";
 export type CardType =
-  | "weekly"
-  | "summary"
-  | "tasks"
-  | "meeting"
-  | "trip"
-  | "note"
-  | "analysis";
+  "weekly" | "summary" | "tasks" | "meeting" | "trip" | "note" | "analysis";
 
 export type Overlay =
   | { name: "none" }
@@ -36,6 +30,9 @@ export interface Task {
   id: string;
   title: string;
   done: boolean;
+  originId?: string;
+  endsAt?: number;
+  time?: string;
   category: Category;
   source: Source;
   date: string;
@@ -66,10 +63,12 @@ export interface MemoryItem {
   kind: string;
   text: string;
   enabled: boolean;
-  confidence: number;
+  confidence?: number;
+  updatedAt?: number;
 }
 
 export interface PlanItem {
+  taskId?: string;
   id: string;
   title: string;
   time?: string;
@@ -80,6 +79,7 @@ export interface PlanItem {
 export interface WeeklyPlan {
   id: string;
   variant: number;
+  weekOf?: string;
   generatedAt: number;
   items: PlanItem[];
 }

@@ -3,7 +3,8 @@ import { isoDate } from "./dates";
 
 export function emptyData(): AppData {
   const lang =
-    typeof navigator !== "undefined" && navigator.language.toLowerCase().startsWith("zh")
+    typeof navigator !== "undefined" &&
+    navigator.language.toLowerCase().startsWith("zh")
       ? "zh"
       : "en";
   return {
@@ -18,7 +19,7 @@ export function emptyData(): AppData {
     messages: [],
     plans: [],
     prefs: {
-      notifications: true,
+      notifications: false,
       hapticStyle: true,
       structuredCards: true,
       memoryEnabled: true,

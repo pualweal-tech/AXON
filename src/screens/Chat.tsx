@@ -1,5 +1,12 @@
+import { planTasks } from "../planning";
 import { useState } from "react";
-import { formatRange, formatRangeCaps, formatTime, parseIso } from "../dates";
+import {
+  formatRange,
+  formatRangeCaps,
+  isoDate,
+  formatTime,
+  parseIso,
+} from "../dates";
 import { t } from "../i18n";
 import {
   AxonMark,
@@ -23,7 +30,9 @@ function Tag({ cat }: { cat: Category }) {
 function CardActions({
   card,
   onOpen,
+  messageId,
 }: {
+  messageId: string;
   card: AICard;
   onOpen?: () => void;
 }) {
@@ -37,12 +46,24 @@ function CardActions({
     <div className="card-actions">
       <button
         className="mini-btn dark press"
-        onClick={() => saveCard(card.type, card.title, card.summary || card.title, card)}
+        onClick={() =>
+          saveCard(card.type, card.title, card.summary || card.title, card)
+        }
       >
         {t(lang, "save")}
       </button>
       {titles.length > 0 && (
-        <button className="mini-btn press" onClick={() => convertTasks(titles)}>
+        <button
+          className="mini-btn press"
+          onClick={() =>
+            convertTasks(
+              titles.map((item, i) => ({
+                ...item,
+                originId: messageId + "/" + i,
+              })),
+            )
+          }
+        >
           {t(lang, "convertTasks")}
         </button>
       )}
@@ -55,11 +76,14 @@ function CardActions({
   );
 }
 
-function AICardView({ card }: { card: AICard }) {
+function AICardView({ card, messageId }: { card: AICard; messageId: string }) {
   const { data, openWeeklyFrom, saveCard, convertTasks } = useStore();
   const lang = data.lang;
   const plan = data.plans.find((p) => p.id === card.planId);
-  const dayNum = parseIso(data.selectedDate).getDate();
+  const anchor =
+    plan?.weekOf ||
+    (plan ? isoDate(new Date(plan.generatedAt)) : data.selectedDate);
+  const dayNum = parseIso(anchor).getDate();
 
   if (card.type === "weekly") {
     const items = plan?.items ?? [];
@@ -73,30 +97,51 @@ function AICardView({ card }: { card: AICard }) {
         <button
           className="press"
           onClick={() => openWeeklyFrom(card.planId)}
-          style={{ width: "100%", textAlign: "left", background: "transparent" }}
+          style={{
+            width: "100%",
+            textAlign: "left",
+            background: "transparent",
+          }}
         >
           <div className="row">
             <IconCal day={dayNum} size={22} />
             <div>
               <h4>{t(lang, "weeklySchedule")}</h4>
-              <div className="section-label">{formatRangeCaps(data.selectedDate)}</div>
+              <div className="section-label">{formatRangeCaps(anchor)}</div>
             </div>
           </div>
-          {Object.entries(grouped).slice(0, 2).map(([day, dayItems]) => (
-            <div key={day}>
-              <div className="day-head">{day}</div>
-              {dayItems.slice(0, 2).map((item) => (
-                <div className="plan-item" key={item.id}>
-                  <span className={"dot " + (item.category === "work" ? "" : item.category === "health" ? "health" : "study")} />
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontSize: 12, color: "var(--text-tertiary)" }}>{item.time}</div>
-                    <div style={{ fontSize: 14, fontWeight: 600 }}>{item.title}</div>
+          {Object.entries(grouped)
+            .slice(0, 2)
+            .map(([day, dayItems]) => (
+              <div key={day}>
+                <div className="day-head">{day}</div>
+                {dayItems.slice(0, 2).map((item) => (
+                  <div className="plan-item" key={item.id}>
+                    <span
+                      className={
+                        "dot " +
+                        (item.category === "work"
+                          ? ""
+                          : item.category === "health"
+                            ? "health"
+                            : "study")
+                      }
+                    />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div
+                        style={{ fontSize: 12, color: "var(--text-tertiary)" }}
+                      >
+                        {item.time}
+                      </div>
+                      <div style={{ fontSize: 14, fontWeight: 600 }}>
+                        {item.title}
+                      </div>
+                    </div>
+                    <Tag cat={item.category} />
                   </div>
-                  <Tag cat={item.category} />
-                </div>
-              ))}
-            </div>
-          ))}
+                ))}
+              </div>
+            ))}
         </button>
         <div className="card-actions">
           <button
@@ -104,7 +149,7 @@ function AICardView({ card }: { card: AICard }) {
             onClick={() =>
               saveCard(
                 "weekly",
-                `${t(lang, "weeklyPlan")} · ${formatRange(data.selectedDate, lang)}`,
+                `${t(lang, "weeklyPlan")} · ${formatRange(anchor, lang)}`,
                 items[0]?.title || card.title,
                 { planId: card.planId },
               )
@@ -114,11 +159,14 @@ function AICardView({ card }: { card: AICard }) {
           </button>
           <button
             className="mini-btn press"
-            onClick={() => convertTasks(items.map((i) => ({ title: i.title, category: i.category })))}
+            onClick={() => plan && convertTasks(planTasks(plan))}
           >
             {t(lang, "convertTasks")}
           </button>
-          <button className="mini-btn press" onClick={() => openWeeklyFrom(card.planId)}>
+          <button
+            className="mini-btn press"
+            onClick={() => openWeeklyFrom(card.planId)}
+          >
             {t(lang, "calendar")}
           </button>
         </div>
@@ -132,9 +180,21 @@ function AICardView({ card }: { card: AICard }) {
         <span className="pill ai">● {t(lang, "aiGenerated")}</span>
       </div>
       <h4>{card.title}</h4>
-      {card.summary && <p className="ai-text" style={{ marginTop: 8 }}>{card.summary}</p>}
+      {card.summary && (
+        <p className="ai-text" style={{ marginTop: 8 }}>
+          {card.summary}
+        </p>
+      )}
       {card.bullets && (
-        <ul style={{ marginTop: 10, paddingLeft: 18, color: "var(--text-primary)", fontSize: 14, lineHeight: 1.6 }}>
+        <ul
+          style={{
+            marginTop: 10,
+            paddingLeft: 18,
+            color: "var(--text-primary)",
+            fontSize: 14,
+            lineHeight: 1.6,
+          }}
+        >
           {card.bullets.map((b) => (
             <li key={b}>{b}</li>
           ))}
@@ -143,21 +203,33 @@ function AICardView({ card }: { card: AICard }) {
       {card.tasks &&
         card.tasks.map((task) => (
           <div className="plan-item" key={task.title}>
-            <span className="checkbox"><IconCheck /></span>
+            <span className="checkbox">
+              <IconCheck />
+            </span>
             <div style={{ flex: 1 }}>{task.title}</div>
             <Tag cat={task.category} />
           </div>
         ))}
-      <CardActions card={card} />
+      <CardActions card={card} messageId={messageId} />
     </div>
   );
 }
 
 export function ChatScreen() {
-  const { data, ui, setComposer, sendMessage, setMultimodalOpen, setOverlay, runMultimodal } =
-    useStore();
+  const {
+    data,
+    ui,
+    setComposer,
+    sendMessage,
+    setMultimodalOpen,
+    setOverlay,
+    runMultimodal,
+    cancel,
+  } = useStore();
   const lang = data.lang;
-  const [mode, setMode] = useState<"voice" | "image" | "link" | "document">("voice");
+  const [mode, setMode] = useState<"voice" | "image" | "link" | "document">(
+    "voice",
+  );
 
   return (
     <div className="screen">
@@ -168,11 +240,25 @@ export function ChatScreen() {
             <div className="brand-name">{t(lang, "axon")}</div>
             <div className="page-sub" style={{ marginTop: 2, fontSize: 12 }}>
               <span className="online-dot" />
-              {t(lang, "online")}
+              {ui.sync === "pending"
+                ? lang === "zh"
+                  ? "同步中"
+                  : "Syncing"
+                : ui.sync === "saved"
+                  ? lang === "zh"
+                    ? "已同步"
+                    : "Synced"
+                  : lang === "zh"
+                    ? "待同步"
+                    : "Not synced"}
             </div>
           </div>
         </div>
-        <button className="icon-btn" onClick={() => setOverlay({ name: "memory" })} aria-label={t(lang, "more")}>
+        <button
+          className="icon-btn"
+          onClick={() => setOverlay({ name: "memory" })}
+          aria-label={t(lang, "more")}
+        >
           <IconDots />
         </button>
       </header>
@@ -183,7 +269,10 @@ export function ChatScreen() {
             <div className="empty" style={{ paddingTop: 32 }}>
               <h3>{t(lang, "emptyChat")}</h3>
               <p>{t(lang, "emptyChatHint")}</p>
-              <button className="btn btn-primary" onClick={() => sendMessage(t(lang, "planWeekPrompt"))}>
+              <button
+                className="btn btn-primary"
+                onClick={() => sendMessage(t(lang, "planWeekPrompt"))}
+              >
                 {t(lang, "planWeek")}
               </button>
             </div>
@@ -200,8 +289,14 @@ export function ChatScreen() {
                 </div>
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div className="ai-text">{m.text}</div>
-                  {m.card && <AICardView card={m.card} />}
-                  <div style={{ fontSize: 11, color: "var(--text-tertiary)", marginTop: 6 }}>
+                  {m.card && <AICardView card={m.card} messageId={m.id} />}
+                  <div
+                    style={{
+                      fontSize: 11,
+                      color: "var(--text-tertiary)",
+                      marginTop: 6,
+                    }}
+                  >
                     {formatTime(m.createdAt, lang)}
                   </div>
                 </div>
@@ -214,7 +309,12 @@ export function ChatScreen() {
                 <IconSpark size={12} />
               </div>
               <div>
-                <div className="ai-text">{t(lang, "thinking")}</div>
+                <div className="ai-text">
+                  {ui.streamText || t(lang, "thinking")}{" "}
+                  <button className="mini-btn" onClick={cancel}>
+                    {lang === "zh" ? "取消" : "Cancel"}
+                  </button>
+                </div>
                 <div className="typing">
                   <span />
                   <span />
@@ -254,7 +354,12 @@ export function ChatScreen() {
           >
             <IconMic />
           </button>
-          <button type="submit" className="send-btn press" aria-label={t(lang, "send")}>
+          <button
+            type="submit"
+            disabled={ui.typing || ui.generating}
+            className="send-btn press"
+            aria-label={t(lang, "send")}
+          >
             <IconSend />
           </button>
         </form>

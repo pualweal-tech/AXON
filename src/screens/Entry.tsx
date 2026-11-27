@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { t } from "../i18n";
 import { AxonMark } from "../icons";
-import { ApiError } from "../api";
+import { api, ApiError } from "../api";
 import { useStore } from "../store";
 
 function normalizeEmail(value: string): string {
@@ -27,11 +27,16 @@ export function Splash() {
 
   return (
     <div className={"splash" + (leaving ? " leaving" : "")}>
-      <img src="/logo.png" alt="AXON" className="splash-logo" onError={(e) => {
-        const el = e.currentTarget;
-        el.style.display = "none";
-        el.nextElementSibling?.removeAttribute("hidden");
-      }} />
+      <img
+        src="/logo.svg"
+        alt="AXON"
+        className="splash-logo"
+        onError={(e) => {
+          const el = e.currentTarget;
+          el.style.display = "none";
+          el.nextElementSibling?.removeAttribute("hidden");
+        }}
+      />
       <div hidden>
         <AxonMark size={96} />
       </div>
@@ -42,9 +47,10 @@ export function Splash() {
 export function Auth() {
   const { data, login, register } = useStore();
   const lang = data.lang;
-  const [mode, setMode] = useState<"login" | "signup">("login");
+  const [mode, setMode] = useState<"login" | "signup" | "recover">("login");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [recovery, setRecovery] = useState("");
   const [confirm, setConfirm] = useState("");
   const [name, setName] = useState("");
   const [error, setError] = useState("");
@@ -68,7 +74,14 @@ export function Auth() {
     setBusy(true);
     try {
       if (mode === "signup") await register(cleaned, password, name);
-      else await login(cleaned, password);
+      else if (mode === "recover") {
+        const result = await api.recover(cleaned, password, recovery.trim());
+        window.prompt(
+          lang === "zh" ? "请保存新的恢复码" : "Save your new recovery code",
+          result.recovery,
+        );
+        await login(cleaned, password);
+      } else await login(cleaned, password);
     } catch (err) {
       const code = err instanceof ApiError ? err.code : "";
       if (code === "exists") setError(t(lang, "emailTaken"));
@@ -135,8 +148,14 @@ export function Auth() {
           className="field"
           type="password"
           value={password}
-          placeholder={t(lang, "passwordPlaceholder")}
-          autoComplete={mode === "signup" ? "new-password" : "current-password"}
+          placeholder={
+            mode === "recover"
+              ? lang === "zh"
+                ? "新密码"
+                : "New password"
+              : t(lang, "passwordPlaceholder")
+          }
+          autoComplete={mode !== "login" ? "new-password" : "current-password"}
           onChange={(e) => setPassword(e.target.value)}
         />
         {mode === "signup" && (
@@ -149,9 +168,38 @@ export function Auth() {
             onChange={(e) => setConfirm(e.target.value)}
           />
         )}
+        {mode === "recover" && (
+          <input
+            className="field"
+            value={recovery}
+            onChange={(e) => setRecovery(e.target.value)}
+            placeholder={lang === "zh" ? "账号恢复码" : "Account recovery code"}
+          />
+        )}
         {error && <p className="auth-error">{error}</p>}
-        <button className="btn btn-primary btn-block" type="submit" disabled={busy}>
-          {busy ? t(lang, "pleaseWait") : mode === "signup" ? t(lang, "createAccount") : t(lang, "logIn")}
+        <button
+          className="btn btn-primary btn-block"
+          type="submit"
+          disabled={busy}
+        >
+          {busy
+            ? t(lang, "pleaseWait")
+            : mode === "recover"
+              ? lang === "zh"
+                ? "重设密码"
+                : "Reset password"
+              : mode === "signup"
+                ? t(lang, "createAccount")
+                : t(lang, "logIn")}
+        </button>
+        <button
+          type="button"
+          className="btn btn-ghost"
+          onClick={() => setMode(mode === "recover" ? "login" : "recover")}
+        >
+          {lang === "zh"
+            ? "使用恢复码重设密码"
+            : "Reset password with recovery code"}
         </button>
         <p className="page-sub">{t(lang, "registerHint")}</p>
       </form>

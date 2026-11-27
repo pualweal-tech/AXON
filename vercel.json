@@ -1,5 +1,8 @@
 {
   "rewrites": [
-    { "source": "/api/(.*)", "destination": "/api" }
+    {
+      "source": "/api/:path*",
+      "destination": "/api?__axon_route=:path*"
+    }
   ]
 }
