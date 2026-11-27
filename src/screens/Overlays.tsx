@@ -1,3 +1,5 @@
+import { api } from "../api";
+import { card as cardSchema } from "../schema";
 import { useState } from "react";
 import { t, languages } from "../i18n";
 import { IconTrash } from "../icons";
@@ -7,7 +9,19 @@ import type { AIProvider, ThemeMode } from "../types";
 
 export function Overlays() {
   const store = useStore();
-  const { data, ui, setOverlay, addNote, updateNote, deleteNote, toggleTask, deleteTask, setTheme, setLang, setPref } = store;
+  const {
+    data,
+    ui,
+    setOverlay,
+    addNote,
+    updateNote,
+    deleteNote,
+    toggleTask,
+    deleteTask,
+    setTheme,
+    setLang,
+    setPref,
+  } = store;
   const lang = data.lang;
   const overlay = ui.overlay;
 
@@ -42,7 +56,9 @@ export function Overlays() {
       <Sheet onClose={() => setOverlay({ name: "none" })}>
         <h2>{t(lang, "tasks")}</h2>
         <TaskComposer />
-        {data.tasks.length === 0 && <p className="page-sub">{t(lang, "noTasksHint")}</p>}
+        {data.tasks.length === 0 && (
+          <p className="page-sub">{t(lang, "noTasksHint")}</p>
+        )}
         {data.tasks.map((task) => (
           <div key={task.id} className="list-row">
             <button
@@ -55,8 +71,17 @@ export function Overlays() {
             <span className={task.done ? "task-done" : ""} style={{ flex: 1 }}>
               {task.title}
             </span>
-            <span className={"pill " + task.category}>{t(lang, task.category)}</span>
-            <button className="icon-btn" style={{ width: 32, height: 32 }} onClick={() => deleteTask(task.id)}>
+            <small>
+              {task.date} {task.time}
+            </small>
+            <span className={"pill " + task.category}>
+              {t(lang, task.category)}
+            </span>
+            <button
+              className="icon-btn"
+              style={{ width: 32, height: 32 }}
+              onClick={() => deleteTask(task.id)}
+            >
               <IconTrash />
             </button>
           </div>
@@ -67,15 +92,50 @@ export function Overlays() {
 
   if (overlay.name === "saved") {
     const item = data.saved.find((s) => s.id === overlay.id);
+    const card = cardSchema.safeParse(item?.payload);
+    const planId = (item?.payload as { planId?: string } | null)?.planId;
     return (
       <Sheet onClose={() => setOverlay({ name: "none" })}>
         <h2>{t(lang, "saved")}</h2>
-        {data.saved.length === 0 && <p className="page-sub">{t(lang, "noSavedHint")}</p>}
+        {data.saved.length === 0 && (
+          <p className="page-sub">{t(lang, "noSavedHint")}</p>
+        )}
         {item ? (
           <div className="card" style={{ marginTop: 16 }}>
             <span className="pill ai">AI</span>
             <h3 style={{ marginTop: 8 }}>{item.title}</h3>
             <p className="page-sub">{item.preview}</p>
+            {card.success && (
+              <>
+                <ul>
+                  {card.data.bullets?.map((v, i) => (
+                    <li key={i}>{v}</li>
+                  ))}
+                </ul>
+                {card.data.tasks?.map((v, i) => (
+                  <p key={i}>
+                    {v.title} · {t(lang, v.category)}
+                  </p>
+                ))}
+              </>
+            )}
+            {planId && data.plans.some((p) => p.id === planId) && (
+              <button
+                className="mini-btn"
+                onClick={() => store.openWeeklyFrom(planId)}
+              >
+                {t(lang, "weeklyPlan")}
+              </button>
+            )}
+            <button
+              className="mini-btn"
+              onClick={() => {
+                store.deleteSaved(item.id);
+                setOverlay({ name: "saved" });
+              }}
+            >
+              {t(lang, "delete")}
+            </button>
           </div>
         ) : (
           data.saved.map((s) => (
@@ -105,11 +165,24 @@ export function Overlays() {
       document: t(lang, "analyzingDoc"),
     };
     return (
-      <Sheet onClose={() => setOverlay({ name: "none" })}>
+      <Sheet
+        onClose={() => {
+          store.cancel();
+          setOverlay({ name: "none" });
+        }}
+      >
         <div style={{ textAlign: "center", padding: 32 }}>
           <div className="spinner" style={{ margin: "0 auto 16px" }} />
           <h3>{labels[overlay.mode || "voice"]}</h3>
-          {overlay.mode === "document" && <p className="page-sub">{t(lang, "mockFile")}</p>}
+          <button
+            className="mini-btn"
+            onClick={() => {
+              store.cancel();
+              setOverlay({ name: "none" });
+            }}
+          >
+            {t(lang, "close")}
+          </button>
         </div>
       </Sheet>
     );
@@ -117,14 +190,24 @@ export function Overlays() {
 
   if (overlay.name === "appearance") {
     const modes: ThemeMode[] = ["system", "light", "dark"];
-    const labels = [t(lang, "themeSystem"), t(lang, "themeLight"), t(lang, "themeDark")];
+    const labels = [
+      t(lang, "themeSystem"),
+      t(lang, "themeLight"),
+      t(lang, "themeDark"),
+    ];
     return (
       <Sheet onClose={() => setOverlay({ name: "none" })}>
         <h2>{t(lang, "appearance")}</h2>
         {modes.map((mode, i) => (
-          <button key={mode} className="setting-row press" onClick={() => setTheme(mode)}>
+          <button
+            key={mode}
+            className="setting-row press"
+            onClick={() => setTheme(mode)}
+          >
             <span>{labels[i]}</span>
-            {data.theme === mode && <span className="pill ai">{t(lang, "done")}</span>}
+            {data.theme === mode && (
+              <span className="pill ai">{t(lang, "done")}</span>
+            )}
           </button>
         ))}
       </Sheet>
@@ -136,14 +219,20 @@ export function Overlays() {
       <Sheet onClose={() => setOverlay({ name: "none" })}>
         <h2>{t(lang, "language")}</h2>
         {languages.map((item) => (
-          <button key={item.id} className="setting-row press" onClick={() => setLang(item.id)}>
+          <button
+            key={item.id}
+            className="setting-row press"
+            onClick={() => setLang(item.id)}
+          >
             <span>
               {t(lang, item.label)}
               {!item.native && (
                 <div className="page-sub">{t(lang, "fallbackNote")}</div>
               )}
             </span>
-            {data.lang === item.id && <span className="pill ai">{t(lang, "done")}</span>}
+            {data.lang === item.id && (
+              <span className="pill ai">{t(lang, "done")}</span>
+            )}
           </button>
         ))}
       </Sheet>
@@ -155,12 +244,28 @@ export function Overlays() {
       <Sheet onClose={() => setOverlay({ name: "none" })}>
         <h2>{t(lang, "notifications")}</h2>
         <div className="setting-row">
-          <span>{t(lang, "notifPush")}</span>
-          <Switch on={data.prefs.notifications} onClick={() => setPref("notifications", !data.prefs.notifications)} />
+          <span>
+            {lang === "zh"
+              ? "导出日历时附加提醒"
+              : "Include reminders in calendar exports"}
+          </span>
+          <Switch
+            label={lang === "zh" ? "日历提醒" : "Calendar reminders"}
+            on={data.prefs.notifications}
+            onClick={() => setPref("notifications", !data.prefs.notifications)}
+          />
         </div>
         <div className="setting-row">
-          <span>{t(lang, "notifHints")}</span>
-          <Switch on={data.prefs.hapticStyle} onClick={() => setPref("hapticStyle", !data.prefs.hapticStyle)} />
+          <span>
+            {lang === "zh"
+              ? "应用打开时提醒到期任务"
+              : "Remind me of due tasks while AXON is open"}
+          </span>
+          <Switch
+            label={lang === "zh" ? "到期提醒" : "Due task reminders"}
+            on={data.prefs.hapticStyle}
+            onClick={() => setPref("hapticStyle", !data.prefs.hapticStyle)}
+          />
         </div>
       </Sheet>
     );
@@ -174,7 +279,9 @@ export function Overlays() {
     return (
       <Sheet onClose={() => setOverlay({ name: "none" })}>
         <h2>{t(lang, "about")}</h2>
-        <p className="page-sub" style={{ marginTop: 12 }}>{t(lang, "aboutBody")}</p>
+        <p className="page-sub" style={{ marginTop: 12 }}>
+          {t(lang, "aboutBody")}
+        </p>
         <p className="page-sub">{t(lang, "version")}</p>
       </Sheet>
     );
@@ -184,8 +291,11 @@ export function Overlays() {
     return (
       <Sheet onClose={() => setOverlay({ name: "none" })}>
         <h2>{t(lang, "account")}</h2>
-        <p className="page-sub" style={{ marginTop: 12 }}>{store.user?.name || t(lang, "axon")}</p>
+        <p className="page-sub" style={{ marginTop: 12 }}>
+          {store.user?.name || t(lang, "axon")}
+        </p>
         <p className="page-sub">{store.user?.email}</p>
+        <AccountActions />
       </Sheet>
     );
   }
@@ -194,7 +304,8 @@ export function Overlays() {
 }
 
 function AiPrefsSheet() {
-  const { data, keys, setOverlay, setPref, setProvider, saveApiKey } = useStore();
+  const { data, keys, setOverlay, setPref, setProvider, saveApiKey, toast } =
+    useStore();
   const lang = data.lang;
   const provider = data.prefs.aiProvider;
   const [secret, setSecret] = useState("");
@@ -209,7 +320,10 @@ function AiPrefsSheet() {
   return (
     <Sheet onClose={() => setOverlay({ name: "none" })}>
       <h2>{t(lang, "aiPrefs")}</h2>
-      <div className="setting-row" style={{ display: "block", paddingBottom: 8 }}>
+      <div
+        className="setting-row"
+        style={{ display: "block", paddingBottom: 8 }}
+      >
         <div style={{ marginBottom: 10 }}>{t(lang, "aiProvider")}</div>
         <div className="row" style={{ flexWrap: "wrap", gap: 8 }}>
           {providers.map((item) => (
@@ -228,7 +342,17 @@ function AiPrefsSheet() {
       </div>
       <p className="page-sub" style={{ marginTop: 8 }}>
         {t(lang, "apiKeyHint")}
-        {hasKey ? ` · ${t(lang, "keySaved")}` : ""}
+        {hasKey
+          ? lang === "zh"
+            ? " · 使用个人密钥"
+            : " · Personal key selected"
+          : keys.shared?.[provider]
+            ? lang === "zh"
+              ? " · 使用服务端额度"
+              : " · Deployment-funded key selected"
+            : lang === "zh"
+              ? " · 尚无可用密钥"
+              : " · No key configured"}
       </p>
       <input
         className="field"
@@ -245,10 +369,10 @@ function AiPrefsSheet() {
         disabled={busy || !secret.trim()}
         onClick={() => {
           setBusy(true);
-          void saveApiKey(provider, secret.trim()).finally(() => {
-            setSecret("");
-            setBusy(false);
-          });
+          void saveApiKey(provider, secret.trim())
+            .then(() => setSecret(""))
+            .catch(() => toast(t(lang, "requestFailed")))
+            .finally(() => setBusy(false));
         }}
       >
         {t(lang, "saveKey")}
@@ -259,7 +383,9 @@ function AiPrefsSheet() {
           disabled={busy}
           onClick={() => {
             setBusy(true);
-            void saveApiKey(provider, null).finally(() => setBusy(false));
+            void saveApiKey(provider, null)
+              .catch(() => toast(t(lang, "requestFailed")))
+              .finally(() => setBusy(false));
           }}
         >
           {t(lang, "removeKey")}
@@ -267,15 +393,29 @@ function AiPrefsSheet() {
       )}
       <div className="setting-row">
         <span>{t(lang, "structuredCards")}</span>
-        <Switch on={data.prefs.structuredCards} onClick={() => setPref("structuredCards", !data.prefs.structuredCards)} />
+        <Switch
+          label={t(lang, "structuredCards")}
+          on={data.prefs.structuredCards}
+          onClick={() =>
+            setPref("structuredCards", !data.prefs.structuredCards)
+          }
+        />
       </div>
       <div className="setting-row">
         <span>{t(lang, "voiceReplies")}</span>
-        <Switch on={data.prefs.voiceReplies} onClick={() => setPref("voiceReplies", !data.prefs.voiceReplies)} />
+        <Switch
+          label={t(lang, "voiceReplies")}
+          on={data.prefs.voiceReplies}
+          onClick={() => setPref("voiceReplies", !data.prefs.voiceReplies)}
+        />
       </div>
       <div className="setting-row">
         <span>{t(lang, "memoryAccess")}</span>
-        <Switch on={data.prefs.memoryEnabled} onClick={() => setPref("memoryEnabled", !data.prefs.memoryEnabled)} />
+        <Switch
+          label={t(lang, "memoryAccess")}
+          on={data.prefs.memoryEnabled}
+          onClick={() => setPref("memoryEnabled", !data.prefs.memoryEnabled)}
+        />
       </div>
     </Sheet>
   );
@@ -301,9 +441,25 @@ function NoteSheet({
   return (
     <Sheet onClose={onClose}>
       <h2>{t(lang, "notes")}</h2>
-      <input className="field" style={{ marginTop: 16 }} value={title} placeholder={t(lang, "noteTitle")} onChange={(e) => setTitle(e.target.value)} />
-      <textarea className="field field-area" style={{ marginTop: 12 }} value={body} placeholder={t(lang, "noteBody")} onChange={(e) => setBody(e.target.value)} />
-      <button className="btn btn-primary btn-block" style={{ marginTop: 16 }} onClick={() => onSave(title, body)}>
+      <input
+        className="field"
+        style={{ marginTop: 16 }}
+        value={title}
+        placeholder={t(lang, "noteTitle")}
+        onChange={(e) => setTitle(e.target.value)}
+      />
+      <textarea
+        className="field field-area"
+        style={{ marginTop: 12 }}
+        value={body}
+        placeholder={t(lang, "noteBody")}
+        onChange={(e) => setBody(e.target.value)}
+      />
+      <button
+        className="btn btn-primary btn-block"
+        style={{ marginTop: 16 }}
+        onClick={() => onSave(title, body)}
+      >
         {t(lang, "save")}
       </button>
       {onDelete && (
@@ -329,7 +485,12 @@ function TaskComposer() {
         setTitle("");
       }}
     >
-      <input className="field" value={title} placeholder={t(data.lang, "taskPlaceholder")} onChange={(e) => setTitle(e.target.value)} />
+      <input
+        className="field"
+        value={title}
+        placeholder={t(data.lang, "taskPlaceholder")}
+        onChange={(e) => setTitle(e.target.value)}
+      />
       <button className="btn btn-primary" type="submit">
         {t(data.lang, "add")}
       </button>
@@ -344,7 +505,13 @@ function LinkSheet() {
   return (
     <Sheet onClose={() => setOverlay({ name: "none" })}>
       <h2>{t(lang, "summarizePage")}</h2>
-      <input className="field" style={{ marginTop: 16 }} value={url} placeholder={t(lang, "pasteUrl")} onChange={(e) => setUrl(e.target.value)} />
+      <input
+        className="field"
+        style={{ marginTop: 16 }}
+        value={url}
+        placeholder={t(lang, "pasteUrl")}
+        onChange={(e) => setUrl(e.target.value)}
+      />
       <button
         className="btn btn-primary btn-block"
         style={{ marginTop: 16 }}
@@ -353,5 +520,118 @@ function LinkSheet() {
         {t(lang, "summarize")}
       </button>
     </Sheet>
+  );
+}
+
+function AccountActions() {
+  const { data, exportData, toast, user } = useStore();
+  const [action, setAction] = useState<
+    "password" | "delete" | "recovery" | null
+  >(null);
+  const [password, setPassword] = useState(""),
+    [next, setNext] = useState(""),
+    [busy, setBusy] = useState(false);
+  const zh = data.lang === "zh";
+  async function submit() {
+    if (!action) return;
+    if (
+      action === "delete" &&
+      !window.confirm(
+        zh
+          ? "永久删除账号和所有已保存的数据？"
+          : "Permanently delete this account and its data?",
+      )
+    )
+      return;
+    setBusy(true);
+    try {
+      const result = await api.account(
+        action,
+        password,
+        action === "password" ? next : undefined,
+      );
+      if (action === "delete") {
+        for (const k of Object.keys(localStorage))
+          if (
+            k === "axon:data:" + user?.id ||
+            k.startsWith("axon:pending:" + user?.id + ":")
+          )
+            localStorage.removeItem(k);
+        localStorage.setItem("axon-session-event", crypto.randomUUID());
+        location.reload();
+        return;
+      }
+      if (result.recovery)
+        window.prompt(
+          zh ? "请保存新的恢复码" : "Save your new recovery code",
+          result.recovery,
+        );
+      setAction(null);
+      setPassword("");
+      setNext("");
+    } catch {
+      toast(t(data.lang, "requestFailed"));
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <>
+      <button className="setting-row" onClick={exportData}>
+        {zh ? "导出工作区" : "Export workspace"}
+      </button>
+      {(["password", "recovery", "delete"] as const).map((a, i) => (
+        <button
+          key={a}
+          className="setting-row"
+          onClick={() => {
+            setAction(a);
+            setPassword("");
+            setNext("");
+          }}
+        >
+          {
+            (zh
+              ? ["更改密码", "更换恢复码", "删除账号"]
+              : ["Change password", "Rotate recovery code", "Delete account"])[
+              i
+            ]
+          }
+        </button>
+      ))}
+      {action && (
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            void submit();
+          }}
+        >
+          <input
+            className="field"
+            type="password"
+            autoComplete="current-password"
+            aria-label={zh ? "当前密码" : "Current password"}
+            placeholder={zh ? "当前密码" : "Current password"}
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+          />
+          {action === "password" && (
+            <input
+              className="field"
+              type="password"
+              minLength={8}
+              required
+              autoComplete="new-password"
+              placeholder={zh ? "新密码" : "New password"}
+              value={next}
+              onChange={(e) => setNext(e.target.value)}
+            />
+          )}
+          <button className="btn btn-primary" disabled={busy || !password}>
+            {t(data.lang, "done")}
+          </button>
+        </form>
+      )}
+    </>
   );
 }

@@ -3,14 +3,24 @@ import react from "@vitejs/plugin-react";
 
 export default defineConfig({
   plugins: [react()],
-  publicDir: "../assets",
+  publicDir: "public",
   server: {
     port: 5173,
-    host: true,
+    fs: {
+      deny: [
+        "**/data/**",
+        "**/.git/**",
+        "**/.env*",
+        "**/*.{db,sqlite,crt,pem,key,p12,pfx,cer,der}",
+        "**/.npmrc",
+        "**/.yarnrc.yml",
+      ],
+    },
+    host: "127.0.0.1",
     proxy: {
       "/api": {
         target: "http://localhost:8787",
-        changeOrigin: true,
+        changeOrigin: false,
       },
     },
   },

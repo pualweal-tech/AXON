@@ -1,99 +1,132 @@
-import type { AppData, ChatMessage, MemoryItem, WeeklyPlan } from "./types";
-
-export type User = { id: string; email: string; name: string };
-export type Provider = "openai" | "grok" | "deepseek";
-export type KeyFlags = { openai: boolean; grok: boolean; deepseek: boolean };
-
+import type { AppData, ChatMessage, WeeklyPlan, AIProvider } from "./types";
+import type { ModelRequest } from "./schema";
+export type User = { id: string; name: string; email: string };
+export type KeyFlags = Record<AIProvider, boolean> & {
+  shared?: Record<AIProvider, boolean>;
+};
+export type RunInfo = {
+  id: string;
+  mode: "chat" | "plan";
+  label: string;
+  status: "running" | "interrupted" | "failed" | "done";
+  updated: number;
+};
+export type RunResult = { message: ChatMessage; plan: WeeklyPlan | null };
+export type State = { revision: number; data: Partial<AppData> | null };
+export type Session = State & { user: User; recovery?: string };
 export class ApiError extends Error {
-  status: number;
-  code: string;
-  detail?: string;
-  constructor(code: string, status: number, detail?: string) {
+  constructor(
+    public code: string,
+    public status: number,
+  ) {
     super(code);
-    this.code = code;
-    this.status = status;
-    this.detail = detail;
   }
 }
-
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(path, {
-    ...init,
-    credentials: "include",
-    headers: { "Content-Type": "application/json", ...(init?.headers || {}) },
+let owner = "",
+  lifetime = new AbortController();
+export function bindUser(id: string) {
+  lifetime.abort();
+  lifetime = new AbortController();
+  owner = id;
+}
+async function response(
+  path: string,
+  method: string,
+  data?: unknown,
+  signal?: AbortSignal,
+) {
+  const res = await fetch("/api/" + path, {
+    method,
+    body: data === undefined ? undefined : JSON.stringify(data),
+    headers: { "Content-Type": "application/json", "X-Axon-User": owner },
+    credentials: "same-origin",
+    cache: "no-store",
+    signal: signal
+      ? AbortSignal.any([signal, lifetime.signal])
+      : lifetime.signal,
   });
-  const text = await res.text();
-  let body: { error?: string; detail?: string } & T;
-  try {
-    body = JSON.parse(text) as { error?: string; detail?: string } & T;
-  } catch {
-    throw new ApiError(res.status >= 500 ? "server" : "request_failed", res.status);
-  }
   if (!res.ok) {
-    throw new ApiError(body.error || (res.status >= 500 ? "server" : "request_failed"), res.status, body.detail);
+    const code = (await res.json().catch(() => ({}))).error || "request_failed";
+    if ((code === "session_changed" || code === "auth") && owner)
+      window.dispatchEvent(new Event("axon-session-changed"));
+    throw new ApiError(code, res.status);
   }
-  return body;
+  return res;
 }
-
+async function request<T>(
+  path: string,
+  method = "GET",
+  data?: unknown,
+): Promise<T> {
+  return (await response(path, method, data)).json();
+}
 export const api = {
-  me() {
-    return request<{ user: User; data: Partial<AppData> | null }>("/api/auth/me");
-  },
-  register(email: string, password: string, name: string) {
-    return request<{ user: User; data: Partial<AppData> | null }>("/api/auth/register", {
-      method: "POST",
-      body: JSON.stringify({ email, password, name }),
-    });
-  },
-  login(email: string, password: string) {
-    return request<{ user: User; data: Partial<AppData> | null }>("/api/auth/login", {
-      method: "POST",
-      body: JSON.stringify({ email, password }),
-    });
-  },
-  logout() {
-    return request<{ ok: boolean }>("/api/auth/logout", { method: "POST" });
-  },
-  saveData(data: AppData) {
-    const { authenticated, ...payload } = data;
-    void authenticated;
-    return request<{ ok: boolean }>("/api/data", {
-      method: "PUT",
-      body: JSON.stringify({ data: payload }),
-    });
-  },
-  keys() {
-    return request<KeyFlags>("/api/keys");
-  },
-  saveKeys(partial: Partial<Record<Provider | "openai" | "grok" | "deepseek", string | null>>) {
-    return request<KeyFlags>("/api/keys", {
-      method: "POST",
-      body: JSON.stringify(partial),
-    });
-  },
-  chat(input: {
-    text: string;
-    provider: Provider;
-    lang: AppData["lang"];
-    date: string;
-    memories: MemoryItem[];
-    structuredCards: boolean;
-    history: Pick<ChatMessage, "role" | "text">[];
-  }) {
-    return request<{ message: ChatMessage; plan: WeeklyPlan | null }>("/api/chat", {
-      method: "POST",
-      body: JSON.stringify(input),
-    });
-  },
-  plan(input: {
-    provider: Provider;
-    lang: AppData["lang"];
-    date: string;
-    memories: MemoryItem[];
-  }) {
-    return request<{ plan: WeeklyPlan }>("/api/plan", {
-      method: "POST",
-      body: JSON.stringify(input),
-    });
+  me: () => request<Session>("auth/me"),
+  login: (email: string, password: string) =>
+    request<Session>("auth/login", "POST", { email, password }),
+  register: (email: string, password: string, name: string) =>
+    request<Session | { challenge: string }>("auth/register", "POST", {
+      email,
+      password,
+      name,
+    }),
+  verify: (challenge: string, code: string) =>
+    request<Session>("auth/verify", "POST", { challenge, code }),
+  recover: (email: string, password: string, recovery: string) =>
+    request<{ recovery: string }>("auth/recover", "POST", {
+      email,
+      password,
+      recovery,
+    }),
+  account: (action: string, password: string, newPassword?: string) =>
+    request<{ recovery?: string }>("account", "POST", {
+      action,
+      password,
+      newPassword,
+    }),
+  logout: () => request("auth/logout", "POST", {}),
+  data: () => request<State>("data"),
+  saveData: (data: AppData, revision: number) =>
+    request<{ revision: number }>("data", "PUT", { data, revision }),
+  keys: () => request<KeyFlags>("keys"),
+  saveKeys: (values: Partial<Record<AIProvider, string | null>>) =>
+    request<KeyFlags>("keys", "POST", values),
+  runs: () => request<{ runs: RunInfo[] }>("runs"),
+  run: (id: string) =>
+    request<{
+      mode: "chat" | "plan";
+      input: ModelRequest;
+      result: RunResult | null;
+    }>("runs/" + id),
+  async generate(
+    route: "chat" | "plan",
+    input: ModelRequest,
+    signal: AbortSignal,
+    onText: (text: string) => void,
+  ) {
+    const res = await response(route, "POST", input, signal);
+    const reader = res.body!.pipeThrough(new TextDecoderStream()).getReader();
+    let buffer = "";
+    try {
+      while (true) {
+        const chunk = await reader.read();
+        if (chunk.done) throw new ApiError("incomplete", 502);
+        buffer += chunk.value;
+        let i: number;
+        while ((i = buffer.indexOf("\n")) >= 0) {
+          const frame = JSON.parse(buffer.slice(0, i));
+          buffer = buffer.slice(i + 1);
+          if (frame.error) throw new ApiError(frame.error, 502);
+          if (frame.result)
+            return frame.result as {
+              message: ChatMessage;
+              plan: WeeklyPlan | null;
+            };
+          if (typeof frame.text === "string") onText(frame.text);
+        }
+      }
+    } finally {
+      await reader.cancel().catch(() => {});
+    }
   },
 };
